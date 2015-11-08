@@ -166,12 +166,15 @@ class BehaviorReconstructor(object):
 
     _api_FindFirstFileExW = _api_FindFirstFileExA
 
-    # File stuff.
+    def _api_LdrLoadDll(self, return_value, arguments):
+        return ("dll_loaded", arguments["module_name"])
 
     def _api_NtCreateFile(self, return_value, arguments):
-        if NT_SUCCESS(return_value):
-            self.files[arguments["file_handle"]] = arguments["filepath"]
-            return ("file_opened", arguments["filepath"])
+        self.files[arguments["file_handle"]] = arguments["filepath"]
+        return [
+            ("file_opened", arguments["filepath"]),
+            ("file_exists", arguments["filepath"]),
+        ]
 
     _api_NtOpenFile = _api_NtCreateFile
 
@@ -184,6 +187,11 @@ class BehaviorReconstructor(object):
         h = arguments["file_handle"]
         if NT_SUCCESS(return_value) and h in self.files:
             return ("file_written", self.files[h])
+
+    def _api_GetFileAttributesW(self, return_value, arguments):
+        return ("file_exists", arguments["filepath"])
+
+    _api_GetFileAttributesExW = _api_GetFileAttributesW
 
     # Registry stuff.
 
@@ -252,6 +260,55 @@ class BehaviorReconstructor(object):
     # Mutex stuff
 
     def _api_NtCreateMutant(self, return_value, arguments):
-        return ("mutex", arguments["mutant_name"])
+        if arguments["mutant_name"]:
+            return ("mutex", arguments["mutant_name"])
 
     _api_ConnectEx = _api_connect
+
+    # Process stuff.
+
+    def _api_CreateProcessInternalW(self, return_value, arguments):
+        cmdline = arguments["command_line"] or arguments["filepath"]
+        return ("command_line", cmdline)
+
+    def _api_ShellExecuteExW(self, return_value, arguments):
+        if arguments["parameters"]:
+            cmdline = "%s %s" % (arguments["filepath"], arguments["parameters"])
+        else:
+            cmdline = arguments["filepath"]
+        return ("command_line", cmdline)
+
+    def _api_system(self, return_value, arguments):
+        return ("command_line", arguments["command"])
+
+    # WMI stuff.
+
+    def _api_IWbemServices_ExecQuery(self, return_value, arguments):
+        return ("wmi_query", arguments["query"])
+
+    def _api_IWbemServices_ExecQueryAsync(self, return_value, arguments):
+        return ("wmi_query", arguments["query"])
+
+    # GUIDs.
+
+    def _api_CoCreateInstance(self, return_value, arguments):
+        # The iid vs riid is to be removed later on and should be just iid.
+        return [
+            ("guid", arguments["clsid"]),
+            ("guid", arguments.get("iid", arguments.get("riid"))),
+        ]
+
+    def _api_CoCreateInstanceEx(self, return_value, arguments):
+        ret = [
+            ("guid", arguments["clsid"]),
+        ]
+        for iid in arguments["iid"]:
+            ret.append(("guid", iid))
+        return ret
+
+    def _api_CoGetClassObject(self, return_value, arguments):
+        # The iid vs riid is to be removed later on and should be just iid.
+        return [
+            ("guid", arguments["clsid"]),
+            ("guid", arguments.get("iid", arguments.get("riid"))),
+        ]

@@ -6,7 +6,7 @@ import os
 import sys
 
 from django.conf import settings
-from django.shortcuts import render_to_response
+from django.shortcuts import redirect, render_to_response
 from django.template import RequestContext
 
 sys.path.append(settings.CUCKOO_PATH)
@@ -55,8 +55,14 @@ def index(request):
             task_machines.append(machine)
 
         if "sample" in request.FILES:
-            for sample in request.FILES.getlist("sample"):
-                if sample.size == 0:
+            samples = request.FILES.getlist("sample")
+            for sample in samples:
+                # Error if there was only one submitted sample and it's empty.
+                # But if there are multiple and one was empty, just ignore it.
+                if not sample.size:
+                    if len(samples) != 1:
+                        continue
+
                     return render_to_response("error.html",
                                               {"error": "You uploaded an empty file."},
                                               context_instance=RequestContext(request))
@@ -108,7 +114,8 @@ def index(request):
         if tasks_count > 0:
             return render_to_response("submission/complete.html",
                                       {"tasks": task_ids,
-                                       "tasks_count": tasks_count},
+                                       "tasks_count": tasks_count,
+                                       "baseurl": request.build_absolute_uri('/')[:-1]},
                                       context_instance=RequestContext(request))
         else:
             return render_to_response("error.html",
@@ -155,12 +162,9 @@ def status(request, task_id):
                                   {"error": "The specified task doesn't seem to exist."},
                                   context_instance=RequestContext(request))
 
-    completed = False
     if task.status == "reported":
-        completed = True
+        return redirect("analysis.views.report", task_id=task_id)
 
     return render_to_response("submission/status.html",
-                              {"completed": completed,
-                               "status": task.status,
-                               "task_id": task_id},
+                              {"status": task.status, "task_id": task_id},
                               context_instance=RequestContext(request))

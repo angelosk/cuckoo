@@ -11,10 +11,6 @@ import urllib
 import urllib2
 import logging
 import logging.handlers
-import pwd
-import time
-
-from datetime import datetime, timedelta
 
 from lib.cuckoo.common.colors import red, green, yellow, cyan
 from lib.cuckoo.common.config import Config
@@ -26,10 +22,10 @@ from lib.cuckoo.core.database import Database, TASK_RUNNING, TASK_FAILED_ANALYSI
 from lib.cuckoo.core.plugins import import_plugin, import_package, list_plugins
 
 try:
-    import pefile
-    HAVE_PEFILE = True
+    import pwd
+    HAVE_PWD = True
 except ImportError:
-    HAVE_PEFILE = False
+    HAVE_PWD = False
 
 log = logging.getLogger()
 
@@ -60,9 +56,21 @@ def check_configs():
     """Checks if config files exist.
     @raise CuckooStartupError: if config files do not exist.
     """
-    configs = [os.path.join(CUCKOO_ROOT, "conf", "cuckoo.conf"),
-               os.path.join(CUCKOO_ROOT, "conf", "reporting.conf"),
-               os.path.join(CUCKOO_ROOT, "conf", "auxiliary.conf")]
+    configs = [
+        os.path.join(CUCKOO_ROOT, "conf", "auxiliary.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "avd.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "cuckoo.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "esx.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "kvm.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "memory.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "physical.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "processing.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "qemu.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "reporting.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "virtualbox.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "vmware.conf"),
+        os.path.join(CUCKOO_ROOT, "conf", "xenserver.conf"),
+    ]
 
     for config in configs:
         if not os.path.exists(config):
@@ -281,44 +289,22 @@ def init_yara():
 def init_binaries():
     """Inform the user about the need to periodically look for new analyzer
     binaries. These include the Windows monitor etc."""
-    windows = os.path.join("analyzer", "windows", "bin")
+    monitor = os.path.join(CUCKOO_ROOT, "data", "monitor", "latest")
 
-    binaries = [
-        os.path.join(windows, "monitor-x86.dll"),
-        os.path.join(windows, "monitor-x64.dll"),
-        os.path.join(windows, "inject-x86.exe"),
-        os.path.join(windows, "inject-x64.exe"),
-        os.path.join(windows, "is32bit.exe"),
-    ]
-
-    update = False
-
-    for path in binaries:
-        if not os.path.exists(path):
-            log.warning("The binary %s, required for Windows analysis, "
-                        "is missing.", path)
-            update = True
-            continue
-
-        if HAVE_PEFILE:
-            timestamp = pefile.PE(path).FILE_HEADER.TimeDateStamp
-        else:
-            timestamp = os.path.getctime(path)
-
-        filetime = datetime.fromtimestamp(timestamp)
-        one_week = datetime.now() - timedelta(days=7)
-
-        if filetime < one_week:
-            update = True
-            log.info("The binary %s is more than a week old!", path)
-
-    if update:
-        log.critical("It is recommended that you update the binaries used "
-                     "for Windows analysis. To do so, please run the "
-                     "following command: ./utils/community.py -wafb monitor")
-        for x in xrange(3):
-            log.info("Please take note of the warnings above!")
-            time.sleep(1)
+    # Checks whether the "latest" symlink is available as well as whether
+    # it points to an existing directory.
+    if not os.path.exists(monitor):
+        raise CuckooStartupError(
+            "The binaries used for Windows analysis are updated regularly, "
+            "independently from the release line. It appears that you're "
+            "not up-to-date. This can happen when you've just installed "
+            "Cuckoo or when you've updated your Cuckoo version by pulling "
+            "the latest changes from our Git repository. In order to get "
+            "up-to-date, please run the following "
+            "command: `./utils/community.py -wafb monitor` or "
+            "`./utils/community.py -wafb 2.0` if you'd also like to download "
+            "over 300 Cuckoo signatures."
+        )
 
 def cuckoo_clean():
     """Clean up cuckoo setup.
@@ -333,7 +319,7 @@ def cuckoo_clean():
 
     # Initialize the database connection.
     try:
-        db = Database()
+        db = Database(schema_check=False)
     except CuckooDatabaseError as e:
         # If something is screwed due to incorrect database migrations or bad
         # database SqlAlchemy would be unable to connect and operate.
@@ -379,7 +365,12 @@ def cuckoo_clean():
             if not fname.endswith(".pyc"):
                 continue
 
-            path = os.path.join(CUCKOO_ROOT, dirpath, fname)
+            # We don't want to delete the Android's Agent .pyc files (as we
+            # don't ship the original .py files and thus they're critical).
+            if "agent/android/python_agent" in dirpath.replace("\\", "/"):
+                continue
+
+            path = os.path.join(dirpath, fname)
 
             try:
                 os.unlink(path)
@@ -390,6 +381,10 @@ def drop_privileges(username):
     """Drops privileges to selected user.
     @param username: drop privileges to this username
     """
+    if not HAVE_PWD:
+        sys.exit("Unable to import pwd required for dropping "
+                 "privileges (`pip install pwd`)")
+
     try:
         user = pwd.getpwnam(username)
         os.setgroups((user.pw_gid,))

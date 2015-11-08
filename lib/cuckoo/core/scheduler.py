@@ -6,8 +6,8 @@ import os
 import time
 import shutil
 import logging
+import threading
 import Queue
-from threading import Thread, Lock
 
 from lib.cuckoo.common.config import Config
 from lib.cuckoo.common.constants import CUCKOO_ROOT
@@ -25,8 +25,8 @@ from lib.cuckoo.core.resultserver import ResultServer
 log = logging.getLogger(__name__)
 
 machinery = None
-machine_lock = Lock()
-latest_symlink_lock = Lock()
+machine_lock = None
+latest_symlink_lock = threading.Lock()
 
 active_analysis_count = 0
 
@@ -40,7 +40,7 @@ class CuckooDeadMachine(Exception):
     pass
 
 
-class AnalysisManager(Thread):
+class AnalysisManager(threading.Thread):
     """Analysis Manager.
 
     This class handles the full analysis process for a given task. It takes
@@ -51,8 +51,7 @@ class AnalysisManager(Thread):
 
     def __init__(self, task, error_queue):
         """@param task: task object containing the details for the analysis."""
-        Thread.__init__(self)
-        Thread.daemon = True
+        threading.Thread.__init__(self)
 
         self.task = task
         self.errors = error_queue
@@ -190,6 +189,15 @@ class AnalysisManager(Thread):
         """
         options = {}
 
+        if self.task.category == "file":
+            options["file_name"] = File(self.task.target).get_name()
+            options["file_type"] = File(self.task.target).get_type()
+            options["pe_exports"] = \
+                ",".join(File(self.task.target).get_exported_functions())
+
+            package, activity = File(self.task.target).get_apk_entry()
+            self.task.options["apk_entry"] = "%s:%s" % (package, activity)
+
         options["id"] = self.task.id
         options["ip"] = self.machine.resultserver_ip
         options["port"] = self.machine.resultserver_port
@@ -205,10 +213,6 @@ class AnalysisManager(Thread):
             options["timeout"] = self.cfg.timeouts.default
         else:
             options["timeout"] = self.task.timeout
-
-        if self.task.category == "file":
-            options["file_name"] = File(self.task.target).get_name()
-            options["file_type"] = File(self.task.target).get_type()
 
         # copy in other analyzer specific options, TEMPORARY (most likely)
         vm_options = getattr(machinery.options, self.machine.name)
@@ -270,7 +274,7 @@ class AnalysisManager(Thread):
                                             self.machine.label,
                                             machinery.__class__.__name__)
             # Start the machine.
-            machinery.start(self.machine.label)
+            machinery.start(self.machine.label, self.task)
 
             # By the time start returns it will have fully started the Virtual
             # Machine. We can now safely release the machine lock.
@@ -282,7 +286,8 @@ class AnalysisManager(Thread):
                                  self.machine.platform)
 
             # Start the analysis.
-            guest.start_analysis(options)
+            monitor = self.task.options.get("monitor", "latest")
+            guest.start_analysis(options, monitor)
 
             guest.wait_for_completion()
             succeeded = True
@@ -463,11 +468,17 @@ class Scheduler:
 
     def initialize(self):
         """Initialize the machine manager."""
-        global machinery
+        global machinery, machine_lock
 
         machinery_name = self.cfg.cuckoo.machinery
 
-        log.info("Using \"%s\" machine manager", machinery_name)
+        max_vmstartup_count = self.cfg.cuckoo.max_vmstartup_count
+        if max_vmstartup_count:
+            machine_lock = threading.Semaphore(max_vmstartup_count)
+        else:
+            machine_lock = threading.Lock()
+
+        log.info("Using \"%s\" as machine manager", machinery_name)
 
         # Get registered class name. Only one machine manager is imported,
         # therefore there should be only one class in the list.
@@ -601,6 +612,7 @@ class Scheduler:
 
                     # Initialize and start the analysis manager.
                     analysis = AnalysisManager(task, errors)
+                    analysis.daemon = True
                     analysis.start()
                     break
 

@@ -119,7 +119,6 @@ class ResultHandler(SocketServer.BaseRequestHandler):
     """
 
     def setup(self):
-        self.logfd = None
         self.rawlogfd = None
         self.protocol = None
         self.startbuf = ""
@@ -133,8 +132,6 @@ class ResultHandler(SocketServer.BaseRequestHandler):
 
         if self.protocol:
             self.protocol.close()
-        if self.logfd:
-            self.logfd.close()
         if self.rawlogfd:
             self.rawlogfd.close()
 
@@ -236,8 +233,11 @@ class ResultHandler(SocketServer.BaseRequestHandler):
             raise CuckooResultError("ResultServer connection state "
                                     "inconsistent.")
 
-        log.debug("New process (pid=%s, ppid=%s, name=%s)",
-                  pid, ppid, procname)
+        # Only report this process when we're tracking it.
+        if event["track"]:
+            log.debug("New process (pid=%s, ppid=%s, name=%s)",
+                      pid, ppid, procname)
+
         path = os.path.join(self.storagepath, "logs", str(pid) + ".bson")
         self.rawlogfd = open(path, "wb")
         self.rawlogfd.write(self.startbuf)
@@ -245,7 +245,7 @@ class ResultHandler(SocketServer.BaseRequestHandler):
         self.pid, self.ppid, self.procname = pid, ppid, procname
 
     def create_folders(self):
-        folders = "shots", "files", "logs"
+        folders = "shots", "files", "logs", "buffer"
 
         for folder in folders:
             try:

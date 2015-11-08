@@ -9,15 +9,14 @@ import shutil
 import urllib2
 import argparse
 import tempfile
-from zipfile import ZipFile
-from StringIO import StringIO
+from tarfile import TarFile
 
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
 
 import lib.cuckoo.common.colors as colors
 from lib.cuckoo.common.constants import CUCKOO_ROOT
 
-URL = "https://github.com/cuckoobox/community/archive/{0}.zip"
+URL = "https://github.com/cuckoobox/community/archive/{0}.tar.gz"
 
 def download_archive():
     print("Downloading modules from {0}".format(URL))
@@ -28,15 +27,69 @@ def download_archive():
         print("ERROR: Unable to download archive: %s" % e)
         sys.exit(-1)
 
-    zip_data = StringIO()
-    zip_data.write(data)
-    archive = ZipFile(zip_data, "r")
+    fd, filepath = tempfile.mkstemp()
+    os.write(fd, data)
+    os.close(fd)
+
+    archive = TarFile.open(filepath, mode="r:gz")
     temp_dir = tempfile.mkdtemp()
     archive.extractall(temp_dir)
     archive.close()
+    os.unlink(filepath)
     final_dir = os.path.join(temp_dir, os.listdir(temp_dir)[0])
 
     return temp_dir, final_dir
+
+def installdir(src, dst, force, rewrite, origin=[]):
+    for file_name in os.listdir(src):
+        if file_name == ".gitignore":
+            continue
+
+        destination = os.path.join(dst, file_name)
+
+        if not rewrite:
+            if os.path.exists(destination):
+                print("File \"{0}\" already exists, "
+                      "{1}".format(file_name, colors.yellow("skipped")))
+                continue
+
+        install = False
+
+        if not force:
+            while 1:
+                choice = raw_input("Do you want to install file "
+                                   "\"{0}\"? [yes/no] ".format(file_name))
+                if choice.lower() == "yes":
+                    install = True
+                    break
+                elif choice.lower() == "no":
+                    break
+                else:
+                    continue
+        else:
+            install = True
+
+        if install:
+            srcpath = os.path.join(src, file_name)
+            if os.path.islink(srcpath):
+                if os.path.lexists(destination):
+                    os.remove(destination)
+                os.symlink(os.readlink(srcpath), destination)
+                print "Symbolic link \"%s/%s\" -> \"%s\" %s" % (
+                    "/".join(origin), file_name, os.readlink(srcpath),
+                    colors.green("installed"))
+
+            elif os.path.isdir(srcpath):
+                installdir(srcpath, destination, force, rewrite,
+                           origin + [file_name])
+            else:
+                if not os.path.isdir(os.path.dirname(destination)):
+                    os.makedirs(os.path.dirname(destination))
+
+                shutil.copy(srcpath, destination)
+                print "File \"%s/%s\" %s" % (
+                    "/".join(origin), file_name, colors.green("installed"))
+
 
 def install(enabled, force, rewrite):
     (temp, source) = download_archive()
@@ -45,8 +98,10 @@ def install(enabled, force, rewrite):
         "signatures": os.path.join("modules", "signatures"),
         "processing": os.path.join("modules", "processing"),
         "reporting": os.path.join("modules", "reporting"),
-        "machinemanagers": os.path.join("modules", "machinemanagers"),
-        "windows": os.path.join("analyzer", "windows", "bin"),
+        "machinery": os.path.join("modules", "machinery"),
+        "analyzer": os.path.join("analyzer"),
+        "monitor": os.path.join("data", "monitor"),
+        "agent": os.path.join("agent"),
     }
 
     for category in enabled:
@@ -59,38 +114,7 @@ def install(enabled, force, rewrite):
             print "  No candidates available, continuing."
             continue
 
-        for file_name in os.listdir(origin):
-            if file_name == ".gitignore":
-                continue
-
-            destination = os.path.join(CUCKOO_ROOT, folder, file_name)
-
-            if not rewrite:
-                if os.path.exists(destination):
-                    print("File \"{0}\" already exists, "
-                          "{1}".format(file_name, colors.yellow("skipped")))
-                    continue
-
-            install = False
-
-            if not force:
-                while 1:
-                    choice = raw_input("Do you want to install file "
-                                       "\"{0}\"? [yes/no] ".format(file_name))
-                    if choice.lower() == "yes":
-                        install = True
-                        break
-                    elif choice.lower() == "no":
-                        break
-                    else:
-                        continue
-            else:
-                install = True
-
-            if install:
-                shutil.copy(os.path.join(origin, file_name), destination)
-                print("File \"{0}\" {1}".format(file_name,
-                                                colors.green("installed")))
+        installdir(origin, os.path.join(CUCKOO_ROOT, folder), force, rewrite)
 
     shutil.rmtree(temp)
 
@@ -101,7 +125,10 @@ def main():
     parser.add_argument("-a", "--all", help="Download everything", action="store_true", required=False)
     parser.add_argument("-s", "--signatures", help="Download Cuckoo signatures", action="store_true", required=False)
     parser.add_argument("-p", "--processing", help="Download processing modules", action="store_true", required=False)
-    parser.add_argument("-m", "--machinemanagers", help="Download machine managers",action="store_true", required=False)
+    parser.add_argument("-m", "--machinery", help="Download machine managers", action="store_true", required=False)
+    parser.add_argument("-n", "--analyzer", help="Download analyzer modules", action="store_true", required=False)
+    parser.add_argument("-M", "--monitor", help="Download monitoring binaries", action="store_true", required=False)
+    parser.add_argument("-g", "--agent", help="Download agent modules", action="store_true", required=False)
     parser.add_argument("-r", "--reporting", help="Download reporting modules", action="store_true", required=False)
     parser.add_argument("-f", "--force", help="Install files without confirmation", action="store_true", required=False)
     parser.add_argument("-w", "--rewrite", help="Rewrite existing files", action="store_true", required=False)
@@ -116,8 +143,10 @@ def main():
         enabled.append("processing")
         enabled.append("signatures")
         enabled.append("reporting")
-        enabled.append("machinemanagers")
-        enabled.append("windows")
+        enabled.append("machinery")
+        enabled.append("analyzer")
+        enabled.append("monitor")
+        enabled.append("agent")
     else:
         if args.signatures:
             enabled.append("signatures")
@@ -125,8 +154,12 @@ def main():
             enabled.append("processing")
         if args.reporting:
             enabled.append("reporting")
-        if args.machinemanagers:
-            enabled.append("machinemanagers")
+        if args.machinery:
+            enabled.append("machinery")
+        if args.analyzer:
+            enabled.append("analyzer")
+        if args.agent:
+            enabled.append("agent")
 
     if not enabled:
         print(colors.red("You need to enable some category!\n"))

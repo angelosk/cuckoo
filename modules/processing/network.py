@@ -41,6 +41,8 @@ class Pcap:
     """Reads network data from PCAP file."""
     ssl_ports = 443,
 
+    notified_dpkt = False
+
     def __init__(self, filepath):
         """Creates a new instance.
         @param filepath: path to PCAP file
@@ -134,6 +136,10 @@ class Pcap:
         @param connection: connection data
         """
         try:
+            # TODO: Perhaps this block should be removed.
+            # If there is a packet from a non-local IP address, which hasn't
+            # been seen before, it means that the connection wasn't initiated
+            # during the time of the current analysis.
             if connection["src"] not in self.hosts:
                 ip = convert_to_printable(connection["src"])
 
@@ -425,6 +431,14 @@ class Pcap:
     def _https_identify(self, conn, data):
         """Extract a combination of the Session ID, Client Random, and Server
         Random in order to identify the accompanying master secret later."""
+        if not hasattr(dpkt.ssl, "TLSRecord"):
+            if not Pcap.notified_dpkt:
+                Pcap.notified_dpkt = True
+                log.warning("Using an old version of dpkt that does not "
+                            "support TLS streams (install the latest with "
+                            "`pip install dpkt`)")
+            return
+
         try:
             record = dpkt.ssl.TLSRecord(data)
         except dpkt.NeedData:
@@ -622,32 +636,7 @@ class NetworkAnalysis(Processing):
 
     def run(self):
         self.key = "network"
-
-        if not IS_DPKT:
-            log.error("Python DPKT is not installed, aborting PCAP analysis.")
-            return {}
-
-        if not os.path.exists(self.pcap_path):
-            log.warning("The PCAP file does not exist at path \"%s\".",
-                        self.pcap_path)
-            return {}
-
-        if os.path.getsize(self.pcap_path) == 0:
-            log.error("The PCAP file at path \"%s\" is empty." % self.pcap_path)
-            return {}
-
-        sorted_path = self.pcap_path.replace("dump.", "dump_sorted.")
-        if Config().processing.sort_pcap:
-            sort_pcap(self.pcap_path, sorted_path)
-            results = Pcap(sorted_path).run()
-        else:
-            results = Pcap(self.pcap_path).run()
-
-        # Save PCAP file hash.
-        if os.path.exists(self.pcap_path):
-            results["pcap_sha256"] = File(self.pcap_path).get_sha256()
-        if os.path.exists(sorted_path):
-            results["sorted_pcap_sha256"] = File(sorted_path).get_sha256()
+        results = {}
 
         # Include any results provided by the mitm script.
         results["mitm"] = []
@@ -657,6 +646,32 @@ class NetworkAnalysis(Processing):
                     results["mitm"].append(json.loads(line))
                 except:
                     results["mitm"].append(line)
+
+        if not IS_DPKT:
+            log.error("Python DPKT is not installed, aborting PCAP analysis.")
+            return results
+
+        if not os.path.exists(self.pcap_path):
+            log.warning("The PCAP file does not exist at path \"%s\".",
+                        self.pcap_path)
+            return results
+
+        if os.path.getsize(self.pcap_path) == 0:
+            log.error("The PCAP file at path \"%s\" is empty." % self.pcap_path)
+            return results
+
+        sorted_path = self.pcap_path.replace("dump.", "dump_sorted.")
+        if Config().processing.sort_pcap:
+            sort_pcap(self.pcap_path, sorted_path)
+            results.update(Pcap(sorted_path).run())
+        else:
+            results.update(Pcap(self.pcap_path).run())
+
+        # Save PCAP file hash.
+        if os.path.exists(self.pcap_path):
+            results["pcap_sha256"] = File(self.pcap_path).get_sha256()
+        if os.path.exists(sorted_path):
+            results["sorted_pcap_sha256"] = File(sorted_path).get_sha256()
 
         return results
 
@@ -695,6 +710,7 @@ def batch_sort(input_iterator, output_path, buffer_size=32000, output_class=None
             current_chunk = list(islice(input_iterator, buffer_size))
             if not current_chunk:
                 break
+
             current_chunk.sort()
             fd, filepath = tempfile.mkstemp()
             os.close(fd)
@@ -717,7 +733,6 @@ def batch_sort(input_iterator, output_path, buffer_size=32000, output_class=None
             except Exception:
                 pass
 
-# magic
 class SortCap(object):
     """SortCap is a wrapper around the packet lib (dpkt) that allows us to sort pcaps
     together with the batch_sort function above."""
@@ -750,6 +765,7 @@ class SortCap(object):
         rp = next(self.fditer)
         if rp is None:
             return None
+
         self.ctr += 1
 
         ts, raw = rp
